@@ -1,44 +1,58 @@
-# Generation, scoring, and reporting
+# Generation and benchmark scoring
 
-Prepare benchmark prompts with `prepare --inference`. This retains answers for scoring metadata but uses only the native question prefix to generate on the full 1024-token canvas. A training-length cap is never applied to inference prompts.
+Install `.[data,math]`, adding `.[code]` for coding benchmarks. Linux bubblewrap (`bwrap`) and enabled user namespaces are required for isolated code scoring.
 
-```bash
-lfrm generate --config "$recipe" --data "$artifacts/test" \
-  --checkpoint "$artifacts/joint-weights.pt" --embedding "$teacher" \
-  --tokenizer "$teacher" --elf-selector .9999 --prompt-selector .9999 \
-  --powers 2.5 2 1.5 --steps 32 --sccfg 2 --seed 42 \
-  --output "$artifacts/evaluation/seed42"
-lfrm score --config "$recipe" --data "$artifacts/test" \
-  --predictions "$artifacts/evaluation/seed42/predictions.jsonl" \
-  --workers 8 --output "$artifacts/evaluation/seed42/scoring"
-```
-
-Use a distinct directory per seed/setting. Generation checkpoints the generator state and completed predictions after each batch. Repeating the same command resumes; changing the checkpoint, selectors, seed, batch size, clocks, or guidance rejects reuse. Results record the artifact hashes, independent selectors, full coverage, per-batch time, denoiser-call count, and one terminal decoder call. Decoding is greedy. A requested ODE step corresponds to one backbone call at CFG=1; terminal decoding adds a separate backbone call.
-
-Scoring also records an input contract and rejects reuse after predictions, dataset, or supplied benchmark cache change. Official EvalPlus reports retain the complete base/plus result file and separate base/plus accuracy with exact problem coverage.
-
-Generation uses FP32 ELF/prompt computation and FP64 averaging of local time embeddings. Live teacher extraction uses BF16 Qwen and FP32 projection to BF16 targets. These are separate arithmetic choices. SCCFG is an input to the learned guidance embedder, not an extra unconditional forward; SCCFG=1 still uses recurrent self-conditioning. Optional CFG ≠1 adds unconditional model calls. All supplied configurations use CFG=1.
-
-Pre-NFT defaults are ELF/prompt .9999/.9999. NFT math defaults are .99/.99; OCI defaults are .9/.9 at 128 steps and SCCFG3. Select ELF and prompt EMAs independently. A selected-weight export loads as `raw/raw`.
-
-Flow checkpoints can use original teacher prompts with `--prompt-source teacher --features live --teacher ... --representation ...`; they do not require a learned prompt encoder. The feature provider still extracts question-only activations at evaluation.
-
-## Scorers
-
-- GSM8K: the canonical numeric extractor, including boxed answers, answer markers, commas, and fractions.
-- MATH: Math-Verify 0.9.0 with boxed-first LaTeX and expression extraction, strict equivalence, 6-digit rounding, and a 5-second timeout. Put the reference final answer in `metadata.gold_answer`. Reward/scoring parse failures in a gold answer are errors.
-- OCI training: independently sandboxed native tests after pinned EvalPlus sanitization. Reference validation is mandatory before NFT. Tests run in fresh processes with time/memory limits; infrastructure errors propagate.
-- HumanEval/MBPP: the pinned official EvalPlus implementation, retaining base and plus results. This uses official benchmark data, not the OCI training tests.
-
-For official code benchmarks, first populate an EvalPlus cache in a trusted network-enabled environment (using its official data download functions). The scorer mounts that cache read-only and runs with networking disabled:
+## GSM8K and MATH500
 
 ```bash
-lfrm score --config configs/oci_l.yaml --data "$artifacts/humaneval" \
-  --predictions "$artifacts/evaluation/seed42/predictions.jsonl" \
-  --benchmark humaneval --evalplus-cache /path/to/evalplus-cache \
-  --workers 16 --output "$artifacts/evaluation/seed42/evalplus"
+lfrm download --model math-l-post-nft --output artifacts/math-post
+lfrm prepare-benchmark --benchmark math500 --checkpoint artifacts/math-post \
+  --output artifacts/math500
+lfrm generate --checkpoint artifacts/math-post --data artifacts/math500 \
+  --seed 42 --output artifacts/math-seed42
+lfrm score --config artifacts/math-post/config.json --data artifacts/math500 \
+  --predictions artifacts/math-seed42/predictions.jsonl \
+  --workers 8 --output artifacts/math-seed42/scoring
 ```
 
-Use `--benchmark mbpp` for MBPP+. The cache directory must be the contents expected at `$HOME/.cache/evalplus`. No entry-point aliases or repair heuristics are added. Native-test correctness and official EvalPlus base/plus accuracy are distinct measurements.
+For GSM8K, use either GSM8K model ID and `--benchmark gsm8k`. Benchmark preparation pins the dataset revision, validates the complete ordered cohort, and uses only questions to create native Qwen prompts. Gold answers are retained solely for scoring. No training-length cap or truncation is applied to inference prompts.
 
-Generation records seed-level predictions. Use matched problem IDs when computing pass@k, majority vote, or paired bootstrap intervals; do not pool rows across unmatched protocols.
+## HumanEval and MBPP-378
+
+Prepare the combined coding cohort to reproduce the reported batch order and noise stream: 164 HumanEval tasks followed by the specified 378 MBPP tasks. The cohort, including task IDs and source versions, is pinned in `benchmark_specs.json`. Both base and plus tests are scored.
+
+```bash
+lfrm download --model oci-l-post-nft --output artifacts/oci-post
+lfrm prepare-benchmark --benchmark coding --checkpoint artifacts/oci-post \
+  --output artifacts/coding
+lfrm generate --checkpoint artifacts/oci-post --data artifacts/coding \
+  --seed 42 --output artifacts/coding-seed42
+lfrm score --config artifacts/oci-post/config.json --data artifacts/coding \
+  --predictions artifacts/coding-seed42/predictions.jsonl \
+  --benchmark humaneval --evalplus-cache artifacts/coding/evalplus-cache \
+  --workers 16 --output artifacts/coding-seed42/humaneval
+lfrm score --config artifacts/oci-post/config.json --data artifacts/coding \
+  --predictions artifacts/coding-seed42/predictions.jsonl \
+  --benchmark mbpp --evalplus-cache artifacts/coding/evalplus-cache \
+  --workers 16 --output artifacts/coding-seed42/mbpp
+```
+
+`prepare-benchmark` also accepts `humaneval` or `mbpp` individually. These use the same tasks; their batch boundaries and seeded noise assignment differ from combined-cohort generation. The scorer selects the requested benchmark from combined predictions and requires complete input coverage.
+
+Official EvalPlus runs with networking disabled and a minimal filesystem. Its pinned sanitizer receives the task entry point; no function-name repair or aliases are added. The minimum test timeout is 4 seconds and the reference-time multiplier is 4. Startup errors are reported as failures, not incorrect solutions.
+
+## Sampling and resumption
+
+Presets are listed in [models.md](models.md). Override `--seed`, `--steps`, `--sccfg`, `--powers`, or `--batch-size` explicitly. Use a distinct output directory for each seed/setting. Initial Gaussian noise uses a seeded CPU generator; the deterministic logit-normal quantile grid uses mean −1.5 and standard deviation .8. Local clock derivatives are included in Euler updates. SCCFG is a learned guidance input, so SCCFG=1 still uses recurrent self-conditioning. CFG=1 requires no unconditional model calls.
+
+Selected weights and ODE states are FP32; denoiser Transformer forwards use BF16. Time embeddings are averaged in FP64. Vocabulary projection and greedy decoding use FP32, with PyTorch matmul precision set to `high`. Math/GSM prompt encoders use FP32 with dynamic padding; coding prompt encoding uses BF16 and padding to a multiple of 32. These settings are recorded in each package configuration.
+
+Generation atomically saves completed predictions, CPU generator state, and timing after each batch. Repeating the same command resumes. Changing model identity, data, selectors, seed, batch size, clocks, guidance, or numerical settings rejects reuse. Reports retain hashes, complete coverage, per-batch timing, and network-call counts. Scoring similarly checks its input contract.
+
+Existing LFRM checkpoint files remain supported using `--config`, `--embedding`, and `--tokenizer`; `--elf-selector` and `--prompt-selector` select independent states. A packaged directory already contains its selected pair. A flow checkpoint can use teacher prompts with `--prompt-source teacher --features live --teacher ... --representation ...`.
+
+## Accuracy definitions
+
+GSM8K uses the canonical numerical extractor. MATH500 uses Math-Verify 0.9.0 with boxed-first extraction, strict equivalence, 6-digit rounding, and a 5-second timeout. Coding uses the pinned official EvalPlus base/plus tests. OCI training rewards use a separate reference-validated native-test population.
+
+A single seeded evaluation measures pass@1. Use matched problem IDs and multiple independent seeds for pass@k or paired bootstrap intervals. Do not pool different protocols. Release-validation scores are reported separately from the paper's eight-seed estimates.

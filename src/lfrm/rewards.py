@@ -102,6 +102,8 @@ def sandbox_prefix(extra_mounts=()):
         PATH="/opt/python/bin:/usr/bin:/bin",
         PYTHONPATH=f"/opt/environment/lib/python{version}/site-packages",
         HOME="/tmp",
+        LD_LIBRARY_PATH="/opt/python/lib",
+        EVALPLUS_MAX_MEMORY_BYTES="4294967296",
         PYTHONDONTWRITEBYTECODE="1",
         PYTHONHASHSEED="42",
         OMP_NUM_THREADS="1",
@@ -150,10 +152,10 @@ def execute_code(code, tests, timeout=5):
     return result
 
 
-def sanitize_code(text):
+def sanitize_code(text, entrypoint=None):
     # Load the pinned EvalPlus sanitizer without importing benchmark
     # download modules or model-serving SDKs during training.
-    return _load_sanitizer()(text)
+    return _load_sanitizer()(text, entrypoint=entrypoint)
 
 
 from functools import lru_cache

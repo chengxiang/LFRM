@@ -85,8 +85,13 @@ inference:
   - 1.5
   sccfg: 3.0
   cfg: 1.0
-  grid_mean: -0.8
+  grid_mean: -1.5
   grid_std: 0.8
+  arithmetic: bf16
+  prompt_arithmetic: bf16
+  prompt_padding_multiple: 32
+  matmul_precision: high
+  noise_generator: cpu
   elf_selector: '.9999'
   prompt_selector: '.9999'
 nft:

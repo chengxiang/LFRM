@@ -29,6 +29,15 @@ def score(args, cfg):
     ]
     if [p["id"] for p in predictions] != [r["id"] for r in gold]:
         raise ValueError("prediction coverage/order differs from dataset")
+    if args.benchmark:
+        pairs = [
+            (p, r)
+            for p, r in zip(predictions, gold)
+            if r.get("metadata", {}).get("benchmark", args.benchmark) == args.benchmark
+        ]
+        if not pairs:
+            raise ValueError("requested benchmark has no rows")
+        predictions, gold = map(list, zip(*pairs))
     out = Path(args.output)
     out.mkdir(parents=True, exist_ok=True)
     contract = dict(
@@ -61,7 +70,12 @@ def score(args, cfg):
         samples.write_text(
             "".join(
                 json.dumps(
-                    dict(task_id=r["id"], solution=sanitize_code(p["prediction"]))
+                    dict(
+                        task_id=r["id"],
+                        solution=sanitize_code(
+                            p["prediction"], entrypoint=r["entry_point"]
+                        ),
+                    )
                 )
                 + "\n"
                 for p, r in zip(predictions, gold)
@@ -81,6 +95,11 @@ def score(args, cfg):
             args.benchmark,
             "--samples",
             "/results/evalplus_samples.jsonl",
+            "--min-time-limit",
+            "4",
+            "--gt-time-limit-factor",
+            "4",
+            "--test-details",
             "--parallel",
             str(args.workers),
             "--output-file",

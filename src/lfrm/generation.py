@@ -25,11 +25,13 @@ from .teacher import load_embedding
 from .objectives import restore
 
 
-def grid(steps, mean=-0.8, std=0.8, device="cpu"):
+def grid(steps, mean=-1.5, std=0.8, device="cpu"):
     if steps < 1:
         raise ValueError("steps must be positive")
     p = torch.arange(1, steps, device=device, dtype=torch.float32) / steps
-    q = torch.sigmoid(mean + std * math.sqrt(2) * torch.erfinv(2 * p - 1))
+    q = torch.sigmoid(
+        float(mean) + float(std) * (math.sqrt(2.0) * torch.erfinv(2 * p - 1))
+    )
     return torch.cat([q.new_zeros(1), q, q.new_ones(1)])
 
 
@@ -70,7 +72,12 @@ def sample(
     if sum(dims) != condition.shape[-1]:
         raise ValueError("clock/latent dimensions differ")
     z = (
-        torch.randn(condition.shape, device=condition.device, generator=generator)
+        torch.randn(
+            condition.shape,
+            device=generator.device,
+            generator=generator,
+            dtype=torch.float32,
+        ).to(condition.device)
         * cfg["training"]["noise_scale"]
         if initial_noise is None
         else initial_noise.clone()
@@ -81,8 +88,11 @@ def sample(
     scale = torch.full((len(z),), float(sccfg), device=z.device)
     calls = 0
     with autocast(z.device, bf16):
-        for t, tn in zip(times[:-1], times[1:]):
-            local = tuple((t**power).expand(len(z)) for power in powers)
+        for current, following in zip(times[:-1], times[1:]):
+            t, tn = current.item(), following.item()
+            tau = torch.full((len(z),), t, dtype=torch.float32, device=z.device)
+            gammas = torch.tensor(powers, device=z.device, dtype=torch.float32).unbind()
+            local = tuple(tau.pow(gamma) for gamma in gammas)
             pred = model(
                 torch.cat([z, sc], -1),
                 local,
@@ -104,7 +114,11 @@ def sample(
             local_v = local_velocity(pred, z, local, dims, cfg["training"]["t_eps"])
             chunks = local_v.split(dims, -1)
             v = torch.cat(
-                [v * (power * t ** (power - 1)) for v, power in zip(chunks, powers)], -1
+                [
+                    v * (power * tau.pow(power - 1.0))[:, None, None]
+                    for v, power in zip(chunks, gammas)
+                ],
+                -1,
             )
             z = restore(z + (tn - t) * v, condition, mask)
             sc = pred
@@ -144,33 +158,80 @@ def run(args, cfg):
         raise ValueError(
             "generation uses one process; shard input explicitly for independent GPU jobs"
         )
-    ck = load_tensor_file(args.checkpoint)
+    package = None
+    if Path(args.checkpoint).is_dir():
+        from .packages import load_package
+
+        ck, package = load_package(args.checkpoint)
+        cfg = {
+            **cfg,
+            **{
+                k: ck["config"][k]
+                for k in ("task", "teacher", "representation", "data", "training")
+            },
+        }
+        if args.prompt_source != "learned":
+            raise ValueError(
+                "inference packages use their matched learned prompt encoder"
+            )
+        args.embedding = args.embedding or str(
+            Path(args.checkpoint) / package["embedding"]
+        )
+        args.tokenizer = args.tokenizer or str(
+            Path(args.checkpoint) / package["tokenizer"]
+        )
+        for component in ("elf", "prompt"):
+            requested = getattr(args, component + "_selector")
+            if requested and requested.lstrip("0") != package["selection"][
+                component
+            ].lstrip("0"):
+                raise ValueError(
+                    f"package contains only {component} EMA {package['selection'][component]}"
+                )
+    else:
+        ck = load_tensor_file(args.checkpoint)
     # Architecture comes from the checkpoint, evaluation settings from the recipe.
     cfg = {**cfg, "model": ck["config"]["model"], "prompt": ck["config"]["prompt"]}
     is_nft = ck.get("stage", ck.get("contract", {}).get("stage")) == "nft"
-    elf_selector = args.elf_selector or (
-        cfg["nft"]["elf_eval_selector"] if is_nft else cfg["inference"]["elf_selector"]
+    elf_selector = (
+        package["selection"]["elf"]
+        if package
+        else args.elf_selector
+        or (
+            cfg["nft"]["elf_eval_selector"]
+            if is_nft
+            else cfg["inference"]["elf_selector"]
+        )
     )
-    prompt_selector = args.prompt_selector or (
-        cfg["nft"]["prompt_eval_selector"]
-        if is_nft
-        else cfg["inference"]["prompt_selector"]
+    prompt_selector = (
+        package["selection"]["prompt"]
+        if package
+        else args.prompt_selector
+        or (
+            cfg["nft"]["prompt_eval_selector"]
+            if is_nft
+            else cfg["inference"]["prompt_selector"]
+        )
     )
     embedding = (
         load_embedding(args.embedding) if args.prompt_source == "learned" else None
     )
     seed_all(args.seed)
+    torch.set_float32_matmul_precision(cfg["inference"].get("matmul_precision", "high"))
     elf, prompt = build_models(
         cfg,
         device,
         embedding,
         stage="joint" if args.prompt_source == "learned" else "flow",
     )
-    elf.load_state_dict(selected_state(ck, "elf", elf_selector), strict=True)
+    elf.load_state_dict(
+        selected_state(ck, "elf", "raw" if package else elf_selector), strict=True
+    )
     elf.eval()
     if prompt:
         prompt.load_state_dict(
-            selected_state(ck, "prompt", prompt_selector), strict=True
+            selected_state(ck, "prompt", "raw" if package else prompt_selector),
+            strict=True,
         )
         prompt.eval()
     dataset = Rows(args.data)
@@ -186,7 +247,9 @@ def run(args, cfg):
     settings = dict(
         recipe_sha256=digest(cfg),
         feature_provider=None if provider is None else provider.identity,
-        checkpoint_sha256=sha256(args.checkpoint),
+        checkpoint_sha256=sha256(
+            Path(args.checkpoint) / "manifest.json" if package else args.checkpoint
+        ),
         data_sha256=dataset.identity,
         seed=args.seed,
         elf_selector=elf_selector,
@@ -198,13 +261,15 @@ def run(args, cfg):
         cfg=args.cfg,
         batch_size=args.batch_size,
         embedding=None if not args.embedding else artifact_identity(args.embedding),
-        arithmetic="fp32",
+        arithmetic=cfg["inference"].get("arithmetic", "fp32"),
+        noise_generator="cpu",
         decoder="argmax",
+        max_response_tokens=cfg["inference"].get("max_response_tokens"),
         terminal_latent="euler_z",
     )
     out = Path(args.output)
     out.mkdir(parents=True, exist_ok=True)
-    gen = torch.Generator(device=device).manual_seed(args.seed)
+    gen = torch.Generator(device="cpu").manual_seed(args.seed)
     predictions = []
     timings = []
     progress = out / "progress.pt"
@@ -227,11 +292,22 @@ def run(args, cfg):
             torch.cuda.synchronize()
         start = time.monotonic()
         with torch.no_grad():
-            condition = (
-                encode_prompt(prompt, batch, True)
-                if prompt
-                else provider(batch).float()
-            )
+            with autocast(
+                device, cfg["inference"].get("prompt_arithmetic", "fp32") == "bf16"
+            ):
+                condition = (
+                    encode_prompt(
+                        prompt,
+                        batch,
+                        True,
+                        pad_to_multiple=cfg["inference"].get(
+                            "prompt_padding_multiple", 1
+                        ),
+                        pad_id=tokenizer.pad_token_id,
+                    )
+                    if prompt
+                    else provider(batch).float()
+                )
         z, counts = sample(
             elf,
             condition,
@@ -242,13 +318,16 @@ def run(args, cfg):
             powers=settings["powers"],
             sccfg=settings["sccfg"],
             cfg_scale=args.cfg,
+            bf16=settings["arithmetic"] == "bf16",
         )
-        ids = decode(elf, z, settings["sccfg"])
+        ids = decode(elf, z, settings["sccfg"], bf16=settings["arithmetic"] == "bf16")
         if device.type == "cuda":
             torch.cuda.synchronize()
         elapsed = time.monotonic() - start
         for row, tokens in zip(rows, ids.cpu().tolist()):
             tokens = tokens[row["prompt_length"] :]
+            if settings["max_response_tokens"] is not None:
+                tokens = tokens[: settings["max_response_tokens"]]
             if terminal in tokens:
                 tokens = tokens[: tokens.index(terminal)]
             predictions.append(

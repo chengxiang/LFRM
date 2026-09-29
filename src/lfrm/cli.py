@@ -12,9 +12,9 @@ def parser():
     )
     sub = p.add_subparsers(dest="command", required=True)
 
-    def base(name, help):
+    def base(name, help, required=True):
         q = sub.add_parser(name, help=help)
-        q.add_argument("--config", required=True)
+        q.add_argument("--config", required=required)
         return q
 
     def teacher(q):
@@ -27,6 +27,27 @@ def parser():
     def output(q):
         q.add_argument("--output", required=True)
 
+    q = sub.add_parser(
+        "download", help="Download and verify one model and shared inference assets"
+    )
+    q.add_argument("--model", required=True)
+    q.add_argument(
+        "--revision", help="Hugging Face revision (resolved to an immutable commit)"
+    )
+    output(q)
+    q = sub.add_parser(
+        "prepare-benchmark", help="Prepare a canonical evaluation cohort"
+    )
+    q.add_argument(
+        "--benchmark",
+        required=True,
+        choices=["gsm8k", "math500", "humaneval", "mbpp", "coding"],
+    )
+    q.add_argument("--checkpoint", required=True, help="Downloaded inference package")
+    q.add_argument(
+        "--input", help="Optional local benchmark JSONL; must match the pinned cohort"
+    )
+    output(q)
     q = base("prepare", "Tokenize normalized JSONL without truncation")
     q.add_argument("--input", required=True)
     q.add_argument("--tokenizer")
@@ -93,7 +114,11 @@ def parser():
     q.add_argument("--pad-id", type=int, default=151643)
     q.add_argument("--reward-validation")
     q.add_argument("--tokenizer")
-    q = base("generate", "Generate full-canvas answers with independent EMA selectors")
+    q = base(
+        "generate",
+        "Generate full-canvas answers with independent EMA selectors",
+        required=False,
+    )
     data(q)
     teacher(q)
     output(q)
@@ -141,6 +166,14 @@ def parser():
 
 def dispatch(argv=None):
     args = parser().parse_args(argv)
+    if args.command == "download":
+        from .packages import download
+
+        return download(args.model, args.output, args.revision)
+    if args.command == "prepare-benchmark":
+        from .benchmarks import prepare_benchmark
+
+        return prepare_benchmark(args)
     if args.command == "select":
         from .selection import select
 
@@ -206,7 +239,14 @@ def dispatch(argv=None):
         return run(args)
     from .config import load_config
 
-    cfg = load_config(args.config)
+    if args.config:
+        cfg = load_config(args.config)
+    elif args.command == "generate" and Path(args.checkpoint).is_dir():
+        from .packages import read_package
+
+        _, cfg = read_package(args.checkpoint, verify=False)
+    else:
+        raise ValueError("--config is required for checkpoint files")
     if args.command == "prepare":
         from transformers import AutoTokenizer
         from .data import prepare

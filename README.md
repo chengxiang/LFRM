@@ -23,6 +23,23 @@ lfrm validate --output /tmp/lfrm-check
 
 Code execution rewards require Linux **bubblewrap** (`bwrap`) with user namespaces enabled. Execution is isolated from the project tree and network. Sandbox startup errors stop scoring; they are not converted into incorrect answers. See [evaluation](docs/evaluation.md).
 
+## Released models
+
+[Six inference packages](https://huggingface.co/xc91/LFRM) cover GSM8K-B, MATH-L, and OCI-L, before and after NFT. Downloaded packages contain the matched denoiser, vocabulary decoder, prompt encoder, frozen embedding table, and tokenizer.
+
+```bash
+lfrm download --model gsm8k-b-pre-nft --output artifacts/gsm8k-b-pre
+lfrm prepare-benchmark --benchmark gsm8k --checkpoint artifacts/gsm8k-b-pre \
+  --output artifacts/gsm8k-test
+lfrm generate --checkpoint artifacts/gsm8k-b-pre --data artifacts/gsm8k-test \
+  --seed 42 --output artifacts/gsm8k-seed42
+lfrm score --config artifacts/gsm8k-b-pre/config.json --data artifacts/gsm8k-test \
+  --predictions artifacts/gsm8k-seed42/predictions.jsonl --workers 8 \
+  --output artifacts/gsm8k-seed42/scoring
+```
+
+See [model selectors and presets](docs/models.md) and [evaluation commands](docs/evaluation.md). Model artifacts are Apache 2.0; this code is MIT.
+
 ## Configurations
 
 | Configuration | Backbone | Flow epochs | Prompt MSE epochs | Joint epochs | NFT updates |
@@ -36,7 +53,7 @@ Training durations, EMA selectors, and inference settings are configurable.
 
 ## Run the pipeline
 
-The [pipeline guide](docs/pipeline.md) lists every command, data schema, eligibility rule, and artifact dependency. Supply/download the pinned Qwen snapshot and prepare normalized JSONL; weights and training populations are not distributed here.
+The [pipeline guide](docs/pipeline.md) lists every command, data schema, eligibility rule, and artifact dependency. Supply/download the pinned Qwen snapshot and prepare normalized JSONL; training populations are prepared separately. Inference packages are available on Hugging Face.
 
 Set paths to storage outside the repository:
 

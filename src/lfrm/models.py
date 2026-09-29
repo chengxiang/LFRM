@@ -23,12 +23,15 @@ def build_models(cfg, device, embedding=None, stage="joint"):
     return elf, prompt
 
 
-def encode_prompt(prompt, batch, deterministic=False):
+def encode_prompt(prompt, batch, deterministic=False, *, pad_to_multiple=1, pad_id=0):
     span = int(batch["prompt"].sum(1).max())
+    span = ((span + pad_to_multiple - 1) // pad_to_multiple) * pad_to_multiple
+    if span > batch["ids"].shape[1]:
+        raise ValueError("padded prompt exceeds canvas")
     mask = batch["prompt"][:, :span]
     # Never even look up answer IDs in the student.
     ids = torch.where(
-        mask, batch["ids"][:, :span], torch.zeros_like(batch["ids"][:, :span])
+        mask, batch["ids"][:, :span], torch.full_like(batch["ids"][:, :span], pad_id)
     )
     result = prompt(ids, mask, deterministic=deterministic)
     return F.pad(result, (0, 0, 0, batch["ids"].shape[1] - span)).float()
