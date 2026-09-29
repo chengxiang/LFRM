@@ -2,6 +2,8 @@
 
 Continuous latent diffusion for reasoning with frozen Qwen representations and a learned prompt encoder.
 
+Paper: [Reasoning with Continuous Latent Diffusion](https://arxiv.org/pdf/2609.35694).
+
 The training pipeline consists of covariance-aware teacher-CE projector learning, flow/decoder training, prompt imitation with frozen Qwen embeddings, joint training, and NFT.
 
 The implementation includes cached and live-Qwen features, independently selectable ELF/prompt EMAs, synchronous training clocks, asynchronous inference, and task-specific correctness rewards. OCI joint training enables the 2:1 gradient-balanced prompt-MSE term; math joint training and all NFT training disable it.
