@@ -1,5 +1,7 @@
 # LFRM
 
+> Review snapshot: **ICLR-2027-v1**
+
 Continuous latent diffusion for reasoning with frozen Qwen representations and a learned prompt encoder.
 
 The training pipeline consists of covariance-aware teacher-CE projector learning, flow/decoder training, prompt imitation with frozen Qwen embeddings, joint training, and NFT.
