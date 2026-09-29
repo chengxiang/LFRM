@@ -144,6 +144,11 @@ def parser():
     q.add_argument("--workers", type=int, default=4)
     q.add_argument("--benchmark", choices=["humaneval", "mbpp"])
     q.add_argument("--evalplus-cache")
+    q.add_argument(
+        "--function-name-repair",
+        action="store_true",
+        help="Opt in to single-function name aliasing for EvalPlus scoring",
+    )
     q = base("validate-rewards", "Validate reference solutions before NFT")
     data(q)
     output(q)

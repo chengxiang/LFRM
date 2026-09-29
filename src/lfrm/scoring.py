@@ -7,7 +7,8 @@ from pathlib import Path
 import subprocess
 from .common import sha256, atomic_json
 from .data import Rows
-from .rewards import reward, sandbox_prefix, sanitize_code
+from .rewards import reward, sandbox_prefix
+from .code_extraction import extract_code
 
 
 def _score_one(values):
@@ -20,6 +21,11 @@ def _score_one(values):
 
 
 def score(args, cfg):
+    repair = getattr(args, "function_name_repair", False)
+    if repair and not args.benchmark:
+        raise ValueError(
+            "--function-name-repair requires --benchmark humaneval or mbpp"
+        )
     rows = Rows(args.data)
     gold = [rows[i] for i in range(len(rows))]
     predictions = [
@@ -46,6 +52,8 @@ def score(args, cfg):
         predictions_sha256=sha256(args.predictions),
         benchmark=args.benchmark,
     )
+    if repair:
+        contract["function_name_repair"] = True
     if args.benchmark and args.evalplus_cache:
         cache = Path(args.evalplus_cache)
         if not cache.is_dir():
@@ -67,20 +75,18 @@ def score(args, cfg):
                 "--evalplus-cache is required for sandboxed benchmark scoring"
             )
         samples = out / "evalplus_samples.jsonl"
-        samples.write_text(
-            "".join(
-                json.dumps(
-                    dict(
-                        task_id=r["id"],
-                        solution=sanitize_code(
-                            p["prediction"], entrypoint=r["entry_point"]
-                        ),
-                    )
-                )
-                + "\n"
-                for p, r in zip(predictions, gold)
+        extracted, audits = [], []
+        for prediction, row in zip(predictions, gold):
+            solution, audit = extract_code(
+                prediction["prediction"],
+                row["entry_point"],
+                function_name_repair=repair,
             )
-        )
+            extracted.append(dict(task_id=row["id"], solution=solution))
+            audits.append(dict(task_id=row["id"], **audit))
+        samples.write_text("".join(json.dumps(row) + "\n" for row in extracted))
+        audit_path = out / "extraction_audit.jsonl"
+        audit_path.write_text("".join(json.dumps(row) + "\n" for row in audits))
         worker = Path(__file__).with_name("evalplus_worker.py")
         command = sandbox_prefix(
             [
@@ -121,6 +127,12 @@ def score(args, cfg):
             dict(
                 status="completed",
                 scorer="EvalPlus base/plus",
+                code_extraction="single_function_alias" if repair else "standard",
+                function_name_repair=repair,
+                aliased=sum(a["aliased"] for a in audits),
+                extraction_changed=sum(a["code_changed"] for a in audits),
+                extraction_audit_sha256=sha256(audit_path),
+                samples_sha256=sha256(samples),
                 commit="26d6d00bb1fd0fa37f39c99d5290da67891d1c5e",
                 predictions_sha256=sha256(args.predictions),
                 benchmark=args.benchmark,

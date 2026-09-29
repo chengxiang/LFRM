@@ -39,7 +39,23 @@ lfrm score --config artifacts/oci-post/config.json --data artifacts/coding \
 
 `prepare-benchmark` also accepts `humaneval` or `mbpp` individually. These use the same tasks; their batch boundaries and seeded noise assignment differ from combined-cohort generation. The scorer selects the requested benchmark from combined predictions and requires complete input coverage.
 
-Official EvalPlus runs with networking disabled and a minimal filesystem. Its pinned sanitizer receives the task entry point; no function-name repair or aliases are added. The minimum test timeout is 4 seconds and the reference-time multiplier is 4. Startup errors are reported as failures, not incorrect solutions.
+Official EvalPlus runs with networking disabled and a minimal filesystem. Standard scoring is the default: its pinned sanitizer receives the task entry point without adding aliases. The minimum test timeout is 4 seconds and the reference-time multiplier is 4. Startup errors are reported as failures, not incorrect solutions.
+
+### Optional function-name repair
+
+For the separately reported alias-scored results, add `--function-name-repair` to either coding scoring command. Reuse the same predictions and write to a separate output directory:
+
+```bash
+lfrm score --config artifacts/oci-post/config.json --data artifacts/coding \
+  --predictions artifacts/coding-seed42/predictions.jsonl \
+  --benchmark mbpp --evalplus-cache artifacts/coding/evalplus-cache \
+  --function-name-repair --workers 16 \
+  --output artifacts/coding-seed42/mbpp-alias
+```
+
+The [extraction rule](../src/lfrm/code_extraction.py) first sanitizes without an entry point. If the expected name is absent and exactly one top-level function is present, it appends `expected_name = generated_name` and sanitizes again using the expected entry point. Existing bindings, parse failures, and zero or multiple top-level functions retain standard extraction. It preserves function bodies and recursive calls and does not use test outcomes or reference solutions to select a function.
+
+Generation, base/plus tests, and execution limits stay the same. `scoring.json` records the extraction mode and alias/change counts; `extraction_audit.jsonl` records each task's decision. Scoring rejects reuse of an output directory across modes. Report alias-scored accuracies separately from standard accuracies. The flag applies only to `score --benchmark`; training rewards use standard extraction.
 
 ## Sampling and resumption
 

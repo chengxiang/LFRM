@@ -15,7 +15,9 @@ All 4,722 generated predictions and per-problem correctness decisions match the 
 | oci-l-post-nft | humaneval | 54/164 | 32.93% | 53/164 | 32.32% |
 | oci-l-post-nft | mbpp | 92/378 | 24.34% | 80/378 | 21.16% |
 
-The installed public CLI was also checked from outside the source checkout, using only an inference package and prepared benchmark prompts. The coding sanitizer and base/plus decisions match the pinned official EvalPlus scorer without function-name repair. The CPU suite passes 20 tests, including package integrity, selective revision-pinned downloading, benchmark-cohort integrity, and resumption.
+The installed public CLI was also checked from outside the source checkout, using only an inference package and prepared benchmark prompts. The coding sanitizer and base/plus decisions match the pinned official EvalPlus scorer without function-name repair. The CPU suite passes 33 tests, including package integrity, selective revision-pinned downloading, benchmark-cohort integrity, resumption, and optional function-name repair.
+
+Standard and optional alias extraction each reproduce the corresponding saved programs for all 8,672 coding completions across the two models and eight seeds. The alias rule changes 2,432 programs; standard extraction remains the default. These extraction checks are separate from the single-seed accuracy table above.
 
 All six packages were downloaded from [the published Hub revision](https://huggingface.co/xc91/LFRM/tree/ce4e9cf93f173fe5e9a5c32e359a23ee27b88115) and passed file-size and SHA-256 verification. The installed download command was also checked with implicit authentication disabled.
 

@@ -40,6 +40,8 @@ lfrm score --config artifacts/gsm8k-b-pre/config.json --data artifacts/gsm8k-tes
 
 See [model selectors and presets](docs/models.md) and [evaluation commands](docs/evaluation.md). Model artifacts are Apache 2.0; this code is MIT.
 
+Coding scoring defaults to standard EvalPlus extraction. Use `lfrm score --function-name-repair` for the separately labeled single-function alias comparison; see the evaluation guide for its rule and output records.
+
 ## Configurations
 
 | Configuration | Backbone | Flow epochs | Prompt MSE epochs | Joint epochs | NFT updates |
